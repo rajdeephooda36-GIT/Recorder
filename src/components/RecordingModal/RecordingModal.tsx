@@ -22,6 +22,8 @@ type ModalStatus =
   | 'uploadComplete'
   | 'error';
 
+import styles from './RecordingModal.module.css';
+
 type RecordingModalProps = {
   isOpen: boolean;
   onClose: () => void;
@@ -45,6 +47,13 @@ export const RecordingModal = ({
 
   const { isAuthenticated, signIn, getAccessToken } = useYouTube();
 
+  const [status, setStatus] = useState<'idle' | 'loading' | 'converting'>(
+    'idle',
+  );
+  const [progress, setProgress] = useState(0);
+  const [statusMessage, setStatusMessage] = useState('');
+  const ffmpegRef = useRef<FFmpeg>();
+
   useEffect(() => {
     const ffmpeg = new FFmpeg();
     ffmpegRef.current = ffmpeg;
@@ -61,6 +70,10 @@ export const RecordingModal = ({
       setStatus('converting');
       const normalizedProgress = Math.abs(progress);
       const startValue = 2500000;
+      // Convert negative progress value to percentage (0-100)
+      // Progress goes from large negative to small negative, so we need to normalize
+      const normalizedProgress = Math.abs(progress);
+      const startValue = 2500000; // Approximate starting value based on logs
       const percentage = Math.min(
         100,
         Math.max(
@@ -130,6 +143,8 @@ export const RecordingModal = ({
       type: 'video/mp4',
     });
   };
+
+  if (!isOpen || !recordingBlob) return null;
 
   const downloadWebm = () => {
     const url = URL.createObjectURL(recordingBlob);
@@ -232,6 +247,43 @@ export const RecordingModal = ({
   const handleDownloadFallback = () => {
     if (convertedBlob) {
       const url = URL.createObjectURL(convertedBlob);
+    if (!ffmpegRef.current) return;
+
+    setStatus('loading');
+    setStatusMessage('Loading FFmpeg libraries...');
+    setProgress(0);
+
+    const ffmpeg = ffmpegRef.current;
+
+    try {
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+
+      await ffmpeg.load({
+        coreURL: await toBlobURL(
+          `${baseURL}/ffmpeg-core.js`,
+          'text/javascript',
+        ),
+        wasmURL: await toBlobURL(
+          `${baseURL}/ffmpeg-core.wasm`,
+          'application/wasm',
+        ),
+      });
+
+      setStatusMessage('Processing input file...');
+      await ffmpeg.writeFile('input.webm', await fetchFile(recordingBlob));
+
+      setStatusMessage('Starting conversion...');
+      await ffmpeg.exec(['-i', 'input.webm', '-c:v', 'libx264', 'output.mp4']);
+
+      setStatusMessage('Reading converted file...');
+      const data = await ffmpeg.readFile('output.mp4');
+
+      // Download the converted file
+      const url = URL.createObjectURL(
+        new Blob([data instanceof Uint8Array ? data : new Uint8Array()], {
+          type: 'video/mp4',
+        }),
+      );
       const link = document.createElement('a');
       link.href = url;
       link.download = 'recording.mp4';
@@ -391,6 +443,16 @@ export const RecordingModal = ({
 
       default:
         return null;
+
+      setStatus('idle');
+      setStatusMessage('');
+      onClose();
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      console.error('Error converting video:', errorMessage);
+      setStatusMessage(`Error: ${errorMessage}`);
+      setStatus('idle');
     }
   };
 
@@ -419,6 +481,55 @@ export const RecordingModal = ({
         }}
       >
         {renderContent()}
+        <h2 style={{ marginTop: 0, marginBottom: '1.5rem' }}>
+          Recording Complete
+        </h2>
+        {status !== 'idle' ? (
+          <div>
+            <p style={{ textAlign: 'center', margin: '1rem 0' }}>
+              {statusMessage}
+            </p>
+            {status === 'converting' && (
+              <div
+                style={{
+                  width: '100%',
+                  height: '4px',
+                  backgroundColor: '#eee',
+                  borderRadius: '2px',
+                  overflow: 'hidden',
+                  marginTop: '1rem',
+                }}
+              >
+                <div
+                  style={{
+                    width: `${progress}%`,
+                    height: '100%',
+                    backgroundColor: '#007bff',
+                    transition: 'width 0.3s ease',
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        ) : (
+          <div
+            style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}
+          >
+            <Button
+              onClick={convertToMp4}
+              className={styles.convertButton}
+
+            >
+              Convert (MP4)
+            </Button>
+            <Button
+              onClick={downloadWebm}
+              className={styles.downloadButton}
+            >
+              Download (WebM)
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );
